@@ -1,0 +1,7 @@
+version: 0.1.0
+description: W6100 Ethernet Driver (IPv4/IPv6 dual-stack)
+url: https://github.com/drwilco/w6100
+repository: https://github.com/drwilco/w6100.git
+license: Apache-2.0
+dependencies:
+  idf: '>=5.3'

@@ -1,0 +1,31 @@
+# Reference material
+reference/
+datasheet/
+
+# Build directories
+build/
+managed_components/
+dependencies.lock
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Compiled files
+*.o
+*.a
+*.so
+*.pyc
+__pycache__/
+
+# ESP-IDF specific
+sdkconfig
+sdkconfig.old
+sdkconfig.defaults.old
+
+# OS generated files
+.DS_Store
+Thumbs.db
