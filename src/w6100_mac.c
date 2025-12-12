@@ -7,13 +7,13 @@
 #include <stdlib.h>
 #include <sys/cdefs.h>
 #include <inttypes.h>
-#include "esp_eth_mac_w6100.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_check.h"
 #include "esp_system.h"
+#include "esp_mac.h"
 #include "esp_intr_alloc.h"
 #include "esp_heap_caps.h"
 #include "esp_rom_gpio.h"
@@ -23,11 +23,13 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "w6100.h"
-#include "sdkconfig.h"
+#include "w6100_regs.h"
 
 static const char *TAG = "w6100.mac";
 
 #define W6100_SPI_LOCK_TIMEOUT_MS (50)
+#define W6100_100M_TX_TMO_US (200)
+#define W6100_10M_TX_TMO_US (1500)
 #define W6100_ETH_MAC_RX_BUF_SIZE_AUTO (0)
 
 typedef struct {
@@ -59,9 +61,10 @@ typedef struct {
     int int_gpio_num;
     esp_timer_handle_t poll_timer;
     uint32_t poll_period_ms;
-    uint8_t addr[6];
+    uint8_t addr[ETH_ADDR_LEN];
     bool packets_remain;
     uint8_t *rx_buffer;
+    uint32_t tx_tmo;
 } emac_w6100_t;
 
 static void *w6100_spi_init(const void *spi_config)
@@ -243,18 +246,7 @@ err:
 static esp_err_t w6100_write_buffer(emac_w6100_t *emac, const void *buffer, uint32_t len, uint16_t offset)
 {
     esp_err_t ret = ESP_OK;
-    uint32_t remain = len;
-    const uint8_t *buf = buffer;
-    offset %= W6100_TX_MEM_SIZE;
-    if (offset + len > W6100_TX_MEM_SIZE) {
-        remain = (offset + len) % W6100_TX_MEM_SIZE;
-        len = W6100_TX_MEM_SIZE - offset;
-        ESP_GOTO_ON_ERROR(w6100_write(emac, W6100_MEM_SOCK_TX(0, offset), buf, len), err, TAG, "write TX buffer failed");
-        offset += len;
-        buf += len;
-    }
-    ESP_GOTO_ON_ERROR(w6100_write(emac, W6100_MEM_SOCK_TX(0, offset), buf, remain), err, TAG, "write TX buffer failed");
-
+    ESP_GOTO_ON_ERROR(w6100_write(emac, W6100_MEM_SOCK_TX(0, offset), buffer, len), err, TAG, "write TX buffer failed");
 err:
     return ret;
 }
@@ -262,18 +254,7 @@ err:
 static esp_err_t w6100_read_buffer(emac_w6100_t *emac, void *buffer, uint32_t len, uint16_t offset)
 {
     esp_err_t ret = ESP_OK;
-    uint32_t remain = len;
-    uint8_t *buf = buffer;
-    offset %= W6100_RX_MEM_SIZE;
-    if (offset + len > W6100_RX_MEM_SIZE) {
-        remain = (offset + len) % W6100_RX_MEM_SIZE;
-        len = W6100_RX_MEM_SIZE - offset;
-        ESP_GOTO_ON_ERROR(w6100_read(emac, W6100_MEM_SOCK_RX(0, offset), buf, len), err, TAG, "read RX buffer failed");
-        offset += len;
-        buf += len;
-    }
-    ESP_GOTO_ON_ERROR(w6100_read(emac, W6100_MEM_SOCK_RX(0, offset), buf, remain), err, TAG, "read RX buffer failed");
-
+    ESP_GOTO_ON_ERROR(w6100_read(emac, W6100_MEM_SOCK_RX(0, offset), buffer, len), err, TAG, "read RX buffer failed");
 err:
     return ret;
 }
@@ -425,10 +406,10 @@ static esp_err_t emac_w6100_write_phy_reg(esp_eth_mac_t *mac, uint32_t phy_addr,
 {
     esp_err_t ret = ESP_OK;
     emac_w6100_t *emac = __containerof(mac, emac_w6100_t, parent);
-    // PHY register and MAC registers are mixed together in W6100
-    // We use PHYSR register for PHY status
-    ESP_GOTO_ON_FALSE(phy_reg == W6100_REG_PHYSR, ESP_FAIL, err, TAG, "wrong PHY register");
-    ESP_GOTO_ON_ERROR(w6100_write(emac, W6100_REG_PHYSR, &reg_value, sizeof(uint8_t)), err, TAG, "write PHY register failed");
+    // PHY registers are mapped directly in W6100's register space
+    // The phy_reg parameter contains the full W6100 register address
+    uint8_t val = (uint8_t)reg_value;
+    ESP_GOTO_ON_ERROR(w6100_write(emac, phy_reg, &val, sizeof(val)), err, TAG, "write PHY register failed");
 
 err:
     return ret;
@@ -439,10 +420,11 @@ static esp_err_t emac_w6100_read_phy_reg(esp_eth_mac_t *mac, uint32_t phy_addr, 
     esp_err_t ret = ESP_OK;
     ESP_GOTO_ON_FALSE(reg_value, ESP_ERR_INVALID_ARG, err, TAG, "can't set reg_value to null");
     emac_w6100_t *emac = __containerof(mac, emac_w6100_t, parent);
-    // PHY register and MAC registers are mixed together in W6100
-    // We use PHYSR register for PHY status
-    ESP_GOTO_ON_FALSE(phy_reg == W6100_REG_PHYSR, ESP_FAIL, err, TAG, "wrong PHY register");
-    ESP_GOTO_ON_ERROR(w6100_read(emac, W6100_REG_PHYSR, reg_value, sizeof(uint8_t)), err, TAG, "read PHY register failed");
+    // PHY registers are mapped directly in W6100's register space
+    // The phy_reg parameter contains the full W6100 register address
+    uint8_t val = 0;
+    ESP_GOTO_ON_ERROR(w6100_read(emac, phy_reg, &val, sizeof(val)), err, TAG, "read PHY register failed");
+    *reg_value = val;
 
 err:
     return ret;
@@ -504,18 +486,20 @@ err:
 static esp_err_t emac_w6100_set_speed(esp_eth_mac_t *mac, eth_speed_t speed)
 {
     esp_err_t ret = ESP_OK;
+    emac_w6100_t *emac = __containerof(mac, emac_w6100_t, parent);
     switch (speed) {
     case ETH_SPEED_10M:
+        emac->tx_tmo = W6100_10M_TX_TMO_US;
         ESP_LOGD(TAG, "working in 10Mbps");
         break;
     case ETH_SPEED_100M:
+        emac->tx_tmo = W6100_100M_TX_TMO_US;
         ESP_LOGD(TAG, "working in 100Mbps");
         break;
     default:
         ESP_GOTO_ON_FALSE(false, ESP_ERR_INVALID_ARG, err, TAG, "unknown speed");
         break;
     }
-
 err:
     return ret;
 }
@@ -575,7 +559,7 @@ static inline bool is_w6100_sane_for_rxtx(emac_w6100_t *emac)
     if (w6100_read(emac, W6100_REG_PHYSR, &physr, 1) == ESP_OK && (physr & W6100_PHYSR_LNK)) {
         return true;
     }
-   return false;
+    return false;
 }
 
 static esp_err_t emac_w6100_transmit(esp_eth_mac_t *mac, uint8_t *buf, uint32_t length)
@@ -603,14 +587,16 @@ static esp_err_t emac_w6100_transmit(esp_eth_mac_t *mac, uint8_t *buf, uint32_t 
     ESP_GOTO_ON_ERROR(w6100_send_command(emac, W6100_SCR_SEND, 100), err, TAG, "issue SEND command failed");
 
     // polling the TX done event
-    int retry = 0;
     uint8_t status = 0;
-    while (!(status & W6100_SIR_SENDOK)) {
-        ESP_GOTO_ON_ERROR(w6100_read(emac, W6100_REG_SOCK_IR(0), &status, sizeof(status)), err, TAG, "read SOCK0 IR failed");
-        if ((retry++ > 3 && !is_w6100_sane_for_rxtx(emac)) || retry > 10) {
+    uint64_t start = esp_timer_get_time();
+    uint64_t now = 0;
+    do {
+        now = esp_timer_get_time();
+        if (!is_w6100_sane_for_rxtx(emac) || (now - start) > emac->tx_tmo) {
             return ESP_FAIL;
         }
-    }
+        ESP_GOTO_ON_ERROR(w6100_read(emac, W6100_REG_SOCK_IR(0), &status, sizeof(status)), err, TAG, "read SOCK0 IR failed");
+    } while (!(status & W6100_SIR_SENDOK));
     // clear the event bit
     status = W6100_SIR_SENDOK;
     ESP_GOTO_ON_ERROR(w6100_write(emac, W6100_REG_SOCK_IRCLR(0), &status, sizeof(status)), err, TAG, "write SOCK0 IRCLR failed");
@@ -838,6 +824,14 @@ static esp_err_t emac_w6100_init(esp_eth_mac_t *mac)
     ESP_GOTO_ON_ERROR(w6100_reset(emac), err, TAG, "reset w6100 failed");
     /* verify chip id */
     ESP_GOTO_ON_ERROR(w6100_verify_id(emac), err, TAG, "verify chip ID failed");
+    /* If MAC address is not set (all zeros), read from eFuse */
+    static const uint8_t null_mac[6] = {0};
+    if (memcmp(emac->addr, null_mac, 6) == 0) {
+        ESP_GOTO_ON_ERROR(esp_read_mac(emac->addr, ESP_MAC_ETH), err, TAG, "fetch ethernet mac address failed");
+        ESP_LOGI(TAG, "Using eFuse MAC address: %02x:%02x:%02x:%02x:%02x:%02x",
+                 emac->addr[0], emac->addr[1], emac->addr[2],
+                 emac->addr[3], emac->addr[4], emac->addr[5]);
+    }
     /* default setup of internal registers */
     ESP_GOTO_ON_ERROR(w6100_setup_default(emac), err, TAG, "w6100 default setup failed");
     return ESP_OK;
@@ -889,6 +883,7 @@ esp_eth_mac_t *esp_eth_mac_new_w6100(const eth_w6100_config_t *w6100_config, con
     ESP_GOTO_ON_FALSE(emac, NULL, err, TAG, "no mem for MAC instance");
     /* bind methods and attributes */
     emac->sw_reset_timeout_ms = mac_config->sw_reset_timeout_ms;
+    emac->tx_tmo = W6100_100M_TX_TMO_US;  // default to 100Mbps timeout
     emac->int_gpio_num = w6100_config->int_gpio_num;
     emac->poll_period_ms = w6100_config->poll_period_ms;
     emac->parent.set_mediator = emac_w6100_set_mediator;
@@ -911,7 +906,7 @@ esp_eth_mac_t *esp_eth_mac_new_w6100(const eth_w6100_config_t *w6100_config, con
     emac->parent.receive = emac_w6100_receive;
 
     if (w6100_config->custom_spi_driver.init != NULL && w6100_config->custom_spi_driver.deinit != NULL
-        && w6100_config->custom_spi_driver.read != NULL && w6100_config->custom_spi_driver.write != NULL) {
+            && w6100_config->custom_spi_driver.read != NULL && w6100_config->custom_spi_driver.write != NULL) {
         ESP_LOGD(TAG, "Using user's custom SPI Driver");
         emac->spi.init = w6100_config->custom_spi_driver.init;
         emac->spi.deinit = w6100_config->custom_spi_driver.deinit;

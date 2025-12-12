@@ -45,8 +45,7 @@ dependencies:
 
 ```c
 #include "esp_eth.h"
-#include "esp_eth_mac_w6100.h"
-#include "esp_eth_phy_w6100.h"
+#include "w6100.h"
 #include "driver/spi_master.h"
 
 // SPI bus configuration

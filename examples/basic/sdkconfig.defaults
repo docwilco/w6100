@@ -1,0 +1,24 @@
+# sdkconfig defaults for W6100 example
+CONFIG_IDF_TARGET="esp32s3"
+
+# Enable Ethernet
+CONFIG_ETH_ENABLED=y
+CONFIG_ETH_USE_SPI_ETHERNET=y
+
+# Increase main task stack for debug output
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
+
+# Enable verbose logging during development
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# Enable FreeRTOS runtime stats for CPU usage tracking
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+
+# Increase TCP performance - default window is ~5KB which limits throughput
+# W6100 max is 10 Mbps, so optimize for that
+CONFIG_LWIP_TCP_WND_DEFAULT=32768
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=64
+CONFIG_LWIP_TCP_MSS=1460
+CONFIG_LWIP_TCP_OVERSIZE_MSS=y
