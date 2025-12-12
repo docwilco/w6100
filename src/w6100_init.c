@@ -39,6 +39,7 @@ esp_err_t w6100_init(const w6100_init_config_t *config, esp_eth_handle_t *eth_ha
         .sclk_io_num = config->sclk_gpio,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
+        .max_transfer_sz = 16384,  // 16KB DMA buffer
     };
     ESP_GOTO_ON_ERROR(spi_bus_initialize(config->spi_host, &buscfg, SPI_DMA_CH_AUTO),
                       err, TAG, "SPI bus init failed");

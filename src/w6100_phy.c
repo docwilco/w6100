@@ -107,6 +107,9 @@ static esp_err_t w6100_update_link_duplex_speed(phy_w6100_t *w6100)
             } else {
                 duplex = ETH_DUPLEX_FULL;
             }
+            ESP_LOGI(TAG, "Link Up: %s %s", 
+                     speed == ETH_SPEED_100M ? "100Mbps" : "10Mbps",
+                     duplex == ETH_DUPLEX_FULL ? "Full-Duplex" : "Half-Duplex");
             ESP_GOTO_ON_ERROR(eth->on_state_changed(eth, ETH_STATE_SPEED, (void *)speed), err, TAG, "change speed failed");
             ESP_GOTO_ON_ERROR(eth->on_state_changed(eth, ETH_STATE_DUPLEX, (void *)duplex), err, TAG, "change duplex failed");
         }
