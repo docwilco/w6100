@@ -13,7 +13,6 @@
 #include "esp_log.h"
 #include "esp_check.h"
 #include "esp_system.h"
-#include "esp_mac.h"
 #include "esp_intr_alloc.h"
 #include "esp_heap_caps.h"
 #include "esp_rom_gpio.h"
@@ -824,14 +823,6 @@ static esp_err_t emac_w6100_init(esp_eth_mac_t *mac)
     ESP_GOTO_ON_ERROR(w6100_reset(emac), err, TAG, "reset w6100 failed");
     /* verify chip id */
     ESP_GOTO_ON_ERROR(w6100_verify_id(emac), err, TAG, "verify chip ID failed");
-    /* If MAC address is not set (all zeros), read from eFuse */
-    static const uint8_t null_mac[6] = {0};
-    if (memcmp(emac->addr, null_mac, 6) == 0) {
-        ESP_GOTO_ON_ERROR(esp_read_mac(emac->addr, ESP_MAC_ETH), err, TAG, "fetch ethernet mac address failed");
-        ESP_LOGI(TAG, "Using eFuse MAC address: %02x:%02x:%02x:%02x:%02x:%02x",
-                 emac->addr[0], emac->addr[1], emac->addr[2],
-                 emac->addr[3], emac->addr[4], emac->addr[5]);
-    }
     /* default setup of internal registers */
     ESP_GOTO_ON_ERROR(w6100_setup_default(emac), err, TAG, "w6100 default setup failed");
     return ESP_OK;
